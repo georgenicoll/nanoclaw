@@ -5,7 +5,13 @@ description: Run initial NanoClaw setup. Use when user wants to install dependen
 
 # NanoClaw Setup
 
-Welcome the user to NanoClaw. Introduce yourself — you'll be walking them through the entire setup process step by step, from installing dependencies to getting their first message through. Keep it warm and brief (2-3 sentences).
+Welcome the user. Your opening message should cover, in your own words and in ~4–5 sentences total:
+
+1. **What NanoClaw is** — a personal Claude assistant that lives across your messaging apps (WhatsApp, Slack, Telegram, Discord, iMessage, email, and more). A small Node host on your machine routes messages and spins up per-conversation agent containers on demand. Containers come and go, but the agent's memory, conversation history, and any files it creates are persisted to disk — next time a message arrives, the container comes back up right where it left off. Credentials live in a local OneCLI vault; the agent itself never sees them.
+2. **What the setup will cover** — install deps, build the agent sandbox, wire up your first messaging app, test a message end-to-end.
+3. **That you'll run slow work in the background** while talking to them (bootstrap, container build, post-merge rebuild) so they're not watching commands scroll by.
+
+Keep it warm. Not a wall of text.
 
 Then explain that setup involves running many shell commands (installing packages, building containers, starting services), and recommend pre-approving the standard setup commands so they don't have to confirm each one individually.
 
@@ -26,32 +32,66 @@ If they decline, continue — they'll approve commands individually.
 **Internal guidance (do not show to user):**
 
 - Run setup steps automatically. Only pause when user action is required (channel authentication, configuration choices).
-- Setup uses `bash setup.sh` for bootstrap, then `npx tsx setup/index.ts --step <name>` for all other steps. Steps emit structured status blocks to stdout. Verbose logs go to `logs/setup.log`.
+- Setup uses `bash setup.sh` for bootstrap, then `pnpm exec tsx setup/index.ts --step <name>` for all other steps. Steps emit structured status blocks to stdout. Verbose logs go to `logs/setup.log`.
 - **Principle:** When something is broken or missing, fix it. Don't tell the user to go fix it themselves unless it genuinely requires their manual action (e.g. authenticating a channel, pasting a secret token). If a dependency is missing, install it. If a service won't start, diagnose and repair.
 - **UX Note:** Use `AskUserQuestion` for multiple-choice questions only (e.g. "which credential method?"). Do NOT use it when free-text input is needed (e.g. phone numbers, tokens, paths) — just ask the question in plain text and wait for the user's reply.
 - **Timeouts:** Use 5m timeouts for install and build steps.
 - **Waiting on user:** When the user needs to do something (change a setting, get a token, open a browser, etc.), stop and wait. Give clear instructions, then say "Let me know when done or if you need help." Do NOT continue to the next step. If they ask for help, give more detail, ask where they got stuck, and try to assist.
 
+**Subagents for installation work (do not show to user):**
+
+Slow installation work runs in background subagents so the main agent stays in conversation with the user. Three agent types live in `.claude/agents/`:
+
+| Agent | Spawn at | Join before | Overlaps with user doing |
+|---|---|---|---|
+| `nanoclaw-bootstrap` | step 1 | step 2 (env check) | pre-approval + git upstream |
+| `nanoclaw-container-builder` | step 3c (after Docker is up) | step 5 (channel selection) | step 4 OneCLI install + secret setup |
+| `nanoclaw-rebuilder` | immediately after channel skill completes | step 7 (service start) | step 6 mounts config |
+
+**Spawn pattern:** call the `Agent` tool with `run_in_background: true` and `subagent_type: "<agent-name>"`. Continue the flow; the harness notifies you when the subagent returns.
+
+**Return contract:** every subagent ends with a status block.
+- `STATUS: done` → proceed.
+- `STATUS: needs_user` → read `QUESTION` + `CONTEXT` + `LOG_TAIL`. Ask the user (via `AskUserQuestion` for multi-choice, plain text for free-text). Re-spawn the same subagent with the user's answer folded into the new prompt — subagents are one-shot, they don't resume. State lives on disk (logs, lockfiles, installed deps), not in the subagent's memory.
+
+**If pre-approval was declined:** run subagents in the foreground (`run_in_background: false`) so per-command prompts surface in the main chat with context, instead of a silent "background agent waiting on permission" state.
+
+**No judgment calls inside a subagent.** Each agent definition enumerates exactly which failures it may auto-fix and which must escalate. If a subagent returns with an invented repair ("ran `docker system prune`" or "edited the channel adapter to pass tsc"), stop, revert if needed, and escalate to the user.
+
 ## 0. Git Upstream
 
-Ensure `upstream` remote points to `qwibitai/nanoclaw`. If missing, add it silently:
+Ensure `upstream` remote points to `qwibitai/nanoclaw`:
 
 ```bash
-git remote -v
-git remote add upstream https://github.com/qwibitai/nanoclaw.git 2>/dev/null || true
+./setup/scripts/ensure-upstream.sh
 ```
 
-## 1. Bootstrap (Node.js + Dependencies)
+Parse the status block — `STATUS: added | already_set | mismatch`. A mismatch means someone has pointed `upstream` elsewhere; surface it to the user before touching it.
 
-Run `bash setup.sh` and parse the status block.
+## 1. Bootstrap (Node.js + Dependencies) — background
 
-- If NODE_OK=false → Node.js is missing or too old. Use `AskUserQuestion: Would you like me to install Node.js 22?` If confirmed:
-  - macOS: `brew install node@22` (if brew available) or install nvm then `nvm install 22`
-  - Linux: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs`, or nvm
-  - After installing Node, re-run `bash setup.sh`
-- If DEPS_OK=false → Read `logs/setup.log`. Try: delete `node_modules`, re-run `bash setup.sh`. If native module build fails, install build tools (`xcode-select --install` on macOS, `build-essential` on Linux), then retry.
-- If NATIVE_OK=false → better-sqlite3 failed to load. Install build tools and re-run.
-- Record PLATFORM and IS_WSL for later steps.
+> **Tell the user:** "Installing Node and the host dependencies. The orchestrator that routes messages between your messaging apps and the agent containers is a small Node process that runs directly on your machine — this step gets it ready."
+
+Spawn the bootstrap subagent in the background. It runs `bash setup.sh`, auto-repairs transient dep failures on its own, and escalates Node-install and build-tools decisions back to you via `STATUS: needs_user`.
+
+```
+Agent({
+  description: "NanoClaw bootstrap",
+  subagent_type: "nanoclaw-bootstrap",
+  run_in_background: true,
+  prompt: "Run the NanoClaw bootstrap from the project root. Follow your auto-fix and escalation rules. End with your status block."
+})
+```
+
+Continue to step 2. **Barrier: before running the environment check in step 2, wait for the bootstrap result.**
+
+When bootstrap returns:
+- `STATUS: done` → record `PLATFORM` and proceed.
+- `STATUS: needs_user` → surface the embedded `QUESTION` to the user (use `AskUserQuestion` for the Node-install choice — `brew` / `nvm` / `apt` / cancel — and plain text for anything else). Then re-spawn `nanoclaw-bootstrap` with the user's answer in the prompt, e.g. `"User picked: install Node 22 via nvm. Install it, then re-run bash setup.sh."`.
+
+Common escalations you'll translate for the user:
+- **Node missing** → `AskUserQuestion` with Node 22 install options (macOS: brew/nvm; Linux: apt via nodesource/nvm).
+- **Build tools missing** → confirm `xcode-select --install` (macOS) or `sudo apt install build-essential` (Linux).
 
 ## 2. Check Environment
 
@@ -81,10 +121,12 @@ Run `pnpm exec tsx setup/index.ts --step timezone` and parse the status block.
 
 ## 3. Container Runtime (Docker)
 
+> **Tell the user:** "Next up: the sandbox your agent runs in. NanoClaw spawns a container per active conversation — each one gets its own isolated filesystem, working directory, and tools. Containers spin up when a message arrives and spin back down when the conversation goes idle, but the agent's memory, the message history, and any files it created all stay on your disk — the container comes back up right where it left off."
+
 ### 3a. Install Docker
 
 - DOCKER=running → continue to step 4
-- DOCKER=installed_not_running → start Docker: `open -a Docker` (macOS) or `sudo systemctl start docker` (Linux). Wait 15s, re-check with `docker info`.
+- DOCKER=installed_not_running → run `./setup/scripts/ensure-docker-running.sh` and parse the status block. If `STATUS: timeout`, read `logs/setup.log` and surface.
 - DOCKER=not_found → Use `AskUserQuestion: Docker is required for running agents. Would you like me to install it?` If confirmed:
   - macOS: install via `brew install --cask docker`, then `open -a Docker` and wait for it to start. If brew not available, direct to Docker Desktop download at https://docker.com/products/docker-desktop
   - Linux: install with `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
@@ -97,55 +139,50 @@ Agent containers skip CJK fonts by default (~200MB saved). Without them, Chromiu
 - **Resolved timezone from step 2a is a CJK region** (`Asia/Tokyo`, `Asia/Shanghai`, `Asia/Hong_Kong`, `Asia/Taipei`, `Asia/Seoul`) or other signal short of active CJK use → ask: "Enable CJK fonts? Adds ~200MB, lets the agent render CJK in screenshots and PDFs."
 - **Otherwise** → skip.
 
-To enable, write `INSTALL_CJK_FONTS=true` to `.env`:
+To enable:
 
 ```bash
-grep -q '^INSTALL_CJK_FONTS=' .env && sed -i.bak 's/^INSTALL_CJK_FONTS=.*/INSTALL_CJK_FONTS=true/' .env && rm -f .env.bak || echo 'INSTALL_CJK_FONTS=true' >> .env
+./setup/scripts/upsert-env.sh INSTALL_CJK_FONTS true
 ```
 
 The next step's build picks it up automatically.
 
-### 3c. Build and test
+### 3c. Build and test — background
 
-Run `pnpm exec tsx setup/index.ts --step container -- --runtime docker` and parse the status block.
+Docker is now running and dependencies are installed (bootstrap joined before step 2). Spawn the container-builder subagent in the background and continue to step 4 (OneCLI) while it works. This is the biggest parallelization win — the build typically takes 1–5 minutes and OneCLI setup is heavily user-interactive.
 
-**If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
-- Cache issue (stale layers): `docker builder prune -f`. Retry.
-- Dockerfile syntax or missing files: diagnose from the log and fix, then retry.
+```
+Agent({
+  description: "Build agent container",
+  subagent_type: "nanoclaw-container-builder",
+  run_in_background: true,
+  prompt: "Build the NanoClaw agent container image and smoke-test it. Follow your auto-fix and escalation rules. End with your status block."
+})
+```
 
-**If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
+**Barrier: before step 5 (channel selection), wait for the container-builder result.**
+
+When it returns:
+- `STATUS: done` → proceed.
+- `STATUS: needs_user` → surface the question (usually either "start Docker?" or a persistent build error). If the fix is straightforward, apply it and re-spawn the subagent with the user's decision in the prompt.
 
 ## 4. Credential System
 
+> **Tell the user:** "Setting up credential isolation. Your Anthropic token (and any other API keys you add later) live in a local vault called OneCLI. When the agent in a container needs to call the Anthropic API, OneCLI injects the credential at request time — the agent process itself never sees the key."
+
 ### 4a. OneCLI
 
-Install OneCLI and its CLI tool:
+Install the OneCLI gateway and CLI, fix PATH, point the CLI at the local instance, and persist `ONECLI_URL` to `.env` — all in one script:
 
 ```bash
-curl -fsSL onecli.sh/install | sh
-curl -fsSL onecli.sh/cli/install | sh
+./setup/scripts/install-onecli.sh
 ```
 
-Verify both installed: `onecli version`. If the command is not found, the CLI was likely installed to `~/.local/bin/`. Add it to PATH for the current session and persist it:
+Parse the status block. Record `ONECLI_URL` for later user-facing messages (the dashboard path in step 4b uses it).
 
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-# Persist for future sessions (append to shell profile if not already present)
-grep -q '.local/bin' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-grep -q '.local/bin' ~/.zshrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-```
-
-Then re-verify with `onecli version`.
-
-Point the CLI at the local OneCLI instance, the ONECLI_URL was output from the install script above:
-```bash
-onecli config set api-host ${ONECLI_URL}
-```
-
-Ensure `.env` has the OneCLI URL (create the file if it doesn't exist):
-```bash
-grep -q 'ONECLI_URL' .env 2>/dev/null || echo 'ONECLI_URL=${ONECLI_URL}' >> .env
-```
+- `STATUS: success` + `URL_CONFIGURED: true` → continue
+- `STATUS: success` + `URL_CONFIGURED: false` → the installer didn't print a URL we could parse. Read the tail of `logs/setup.log`, find the URL (usually `http://localhost:<port>`), then run `onecli config set api-host <URL>` and `./setup/scripts/upsert-env.sh ONECLI_URL <URL>`.
+- `STATUS: failed` → surface `STAGE` + log tail to user.
 
 Check if a secret already exists:
 ```bash
@@ -191,7 +228,9 @@ Ask them to let you know when done.
 
 ## 5. Set Up Channels
 
-Show the full list of available channels in plain text (do NOT use AskUserQuestion — it limits to 4 options). Ask which one they want to start with. They can add more later with `/customize`.
+> **Tell the user:** "Time to hook up your first messaging app. NanoClaw supports Discord, Slack, Telegram, WhatsApp, email, GitHub, Linear, iMessage, and more — all wired the same way. Pick one to start; you can add more later with `/customize`, including multiple messaging apps side by side, or multiple groups/chats from the same app."
+
+Show the full list of available messaging apps in plain text (do NOT use AskUserQuestion — it limits to 4 options). Ask which one they want to start with. They can add more later with `/customize`.
 
 Channels where the agent gets its own identity (name and avatar) are marked as recommended.
 
@@ -233,13 +272,20 @@ The skill will:
 3. Collect credentials/tokens and write to `.env`
 4. Build and verify
 
-**After the channel skill completes**, install dependencies and rebuild — channel merges may introduce new packages:
+**After the channel skill completes**, spawn the rebuilder subagent in the background. It will run `pnpm install && pnpm run build` to pick up any packages the channel merge added.
 
-```bash
-pnpm install && pnpm run build
+```
+Agent({
+  description: "Rebuild host after channel merge",
+  subagent_type: "nanoclaw-rebuilder",
+  run_in_background: true,
+  prompt: "Rebuild the host to pick up packages from the channel skill merge. Follow your auto-fix and escalation rules. End with your status block."
+})
 ```
 
-If the build fails, read the error output and fix it (usually a missing dependency). Then continue to step 5a.
+**Barrier: before step 7 (service start), wait for the rebuilder result.** Service start needs `dist/` to exist. Continue to step 6 (mounts) while it runs.
+
+If rebuilder returns `STATUS: needs_user` with a build error, surface the `FIRST_ERROR` line to the user and ask how they want to resolve it.
 
 ## 6. Mount Allowlist
 
@@ -251,9 +297,13 @@ pnpm exec tsx setup/index.ts --step mounts -- --empty
 
 ## 7. Start Service
 
-If service already running: unload first.
-- macOS: `launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist`
-- Linux: `systemctl --user stop nanoclaw` (or `systemctl stop nanoclaw` if root)
+**Barrier:** wait for the `nanoclaw-rebuilder` subagent (spawned after the channel skill in step 5) to return `STATUS: done`. The service needs `dist/` to exist. If rebuilder returned `STATUS: needs_user`, resolve with the user first.
+
+If service already running, unload first:
+
+```bash
+./setup/scripts/restart-service.sh stop
+```
 
 Run `pnpm exec tsx setup/index.ts --step service` and parse the status block.
 
@@ -281,6 +331,23 @@ Replace `USERNAME` with the actual username (from `whoami`). Run the two `sudo` 
 
 ## 7a. Wire Channels to Agent Groups
 
+> **Tell the user — mental model + flexibility:**
+>
+> "Wiring decides which *agent* answers which conversation. Quick mental model:
+>
+> - Each group/chat/DM you talk to on a messaging app becomes a **conversation** in NanoClaw.
+> - Conversations get routed to an **agent** — the Claude persona (its name, memory, files, tools, permissions).
+> - Each active conversation spawns its own **session** (the container running right now).
+>
+> You have real flexibility in how you wire this:
+>
+> - **Multiple WhatsApp groups → one agent**: each group is its own conversation thread (its own session), but they share the agent's memory, files, and tools.
+> - **Multiple WhatsApp groups → different agents**: e.g. a 'Work' agent on one group and a 'Personal' agent on another — separate memories, separate files, separate permissions.
+> - **Different messaging apps → one agent**: a WhatsApp group + a Telegram chat both wired to the same agent (still one shared memory).
+> - **Different apps → different agents**: mix and match.
+>
+> **One rule worth remembering:** sessions share the agent's memory and files; **the agent is the privacy boundary**. If you don't want information flowing between two conversations — e.g. a work group seeing stuff from a personal one — give them separate agents, not just separate sessions on one agent."
+
 The service is now running, so polling-based adapters (Telegram) can observe inbound messages — required for pairing.
 
 Invoke `/manage-channels` to wire the installed channels to agent groups. This step:
@@ -294,6 +361,21 @@ The `/manage-channels` skill reads each channel's `## Channel Info` section from
 
 ## 7b. Dashboard & Web Applications
 
+> **Tell the user — capabilities tour:** "Before we wrap up, here's what your agent can do out of the box:
+>
+> - Talk on the messaging app you just wired (and any others you add later with `/customize`).
+> - Use its **agent-browser** for web research and automation — headless Chromium is built in.
+> - **Self-customize** per-conversation — tell it 'remember X for this chat' or 'always respond in bullet points here' and it writes that to the session's CLAUDE.md.
+> - Ask it to **install packages** or **wire new MCP servers** on the fly (with your approval) — it can extend its own toolbox.
+>
+> Extras you can add later with `/customize`:
+>
+> - **More messaging apps** — Discord, Slack, Telegram, WhatsApp, GitHub, Linear, iMessage, Matrix, Webex, Google Chat, Microsoft Teams, WhatsApp Cloud.
+> - **`/add-resend`** — email as a messaging app (send + receive via Resend).
+> - **`/add-karpathy-llm-wiki`** — a persistent wiki knowledge base the agent maintains over time.
+>
+> Want a dashboard + deploy-to-Vercel too? That's the last question in setup — the dashboard gives you a monitoring UI, and Vercel lets the agent build and publish websites for you."
+
 AskUserQuestion: Do you want to create a dashboard and build web applications?
 
 1. **Yes (recommended)** — description: "Get a NanoClaw dashboard to monitor your agents and build custom websites however you want. Deploys to Vercel."
@@ -306,7 +388,7 @@ If yes: invoke `/add-vercel`.
 Run `pnpm exec tsx setup/index.ts --step verify` and parse the status block.
 
 **If STATUS=failed, fix each:**
-- SERVICE=stopped → `pnpm run build`, then restart: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw` (macOS) or `systemctl --user restart nanoclaw` (Linux) or `bash start-nanoclaw.sh` (WSL nohup)
+- SERVICE=stopped → `pnpm run build && ./setup/scripts/restart-service.sh restart`
 - SERVICE=not_found → re-run step 7
 - CREDENTIALS=missing → re-run step 4 (check `onecli secrets list`)
 - CHANNEL_AUTH shows `not_found` for any channel → re-invoke that channel's skill (e.g. `/add-telegram`)
@@ -317,13 +399,13 @@ Tell user to test: send a message in their registered chat. Show: `tail -f logs/
 
 **Service not starting:** Check `logs/nanoclaw.error.log`. Common: wrong Node path (re-run step 7), credential system not running (check `curl ${ONECLI_URL}/api/health`), missing channel credentials (re-invoke channel skill).
 
-**Container agent fails ("Claude Code process exited with code 1"):** Ensure Docker is running — `open -a Docker` (macOS) or `sudo systemctl start docker` (Linux). Check container logs in `groups/main/logs/container-*.log`.
+**Container agent fails ("Claude Code process exited with code 1"):** Ensure Docker is running with `./setup/scripts/ensure-docker-running.sh`. Check container logs in `groups/main/logs/container-*.log`.
 
 **No response to messages:** Check trigger pattern. Main channel doesn't need prefix. Check DB: `pnpm exec tsx setup/index.ts --step verify`. Check `logs/nanoclaw.log`.
 
 **Channel not connecting:** Verify the channel's credentials are set in `.env`. Channels auto-enable when their credentials are present. For WhatsApp: check `store/auth/creds.json` exists. For token-based channels: check token values in `.env`. Restart the service after any `.env` change.
 
-**Unload service:** macOS: `launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist` | Linux: `systemctl --user stop nanoclaw`
+**Unload service:** `./setup/scripts/restart-service.sh stop`
 
 
 ## 9. Diagnostics
