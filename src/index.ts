@@ -240,7 +240,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (missedMessages.length === 0) return true;
 
   // Check if trigger is required and present, even for the main group
-  if (group.requiresTrigger === true || (!isMainGroup && group.requiresTrigger !== false)) {
+  if (
+    group.requiresTrigger === true ||
+    (!isMainGroup && group.requiresTrigger !== false)
+  ) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
@@ -485,7 +488,9 @@ async function startMessageLoop(): Promise<void> {
           }
 
           const isMainGroup = group.isMain === true;
-          const needsTrigger = group.requiresTrigger === true || (!isMainGroup && group.requiresTrigger !== false);
+          const needsTrigger =
+            group.requiresTrigger === true ||
+            (!isMainGroup && group.requiresTrigger !== false);
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as

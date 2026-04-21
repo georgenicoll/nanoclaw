@@ -367,7 +367,10 @@ export class WhatsAppChannel implements Channel {
     try {
       logger.info({ jid }, 'Calling sock.sendMessage');
       const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('sock.sendMessage timed out after 20s')), 20000),
+        setTimeout(
+          () => reject(new Error('sock.sendMessage timed out after 20s')),
+          20000,
+        ),
       );
       const sent = await Promise.race([
         this.sock.sendMessage(jid, { text: prefixed }),

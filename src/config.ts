@@ -11,6 +11,8 @@ const envConfig = readEnvFile([
   'ONECLI_URL',
   'ONECLI_API_KEY',
   'TZ',
+  'HA_MCP_URL',
+  'HA_TOKEN',
 ]);
 
 export const ASSISTANT_NAME =
@@ -97,3 +99,6 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+export const HA_MCP_URL = process.env.HA_MCP_URL || envConfig.HA_MCP_URL;
+export const HA_TOKEN = process.env.HA_TOKEN || envConfig.HA_TOKEN;
