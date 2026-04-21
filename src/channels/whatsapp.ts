@@ -112,8 +112,11 @@ export class WhatsAppChannel implements Channel {
       logger: baileysLogger,
       browser: Browsers.macOS('Chrome'),
       markOnlineOnConnect: false,
-      cachedGroupMetadata: async (jid: string) =>
-        this.getNormalizedGroupMetadata(jid),
+      cachedGroupMetadata: async (jid: string) => {
+        const cached = this.groupMetadataCache.get(jid);
+        if (cached && cached.expiresAt > Date.now()) return cached.metadata;
+        return undefined;
+      },
       getMessage: async (key: WAMessageKey) => {
         const cached = this.sentMessageCache.get(key.id || '');
         if (cached) {
@@ -362,7 +365,14 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      const sent = await this.sock.sendMessage(jid, { text: prefixed });
+      logger.info({ jid }, 'Calling sock.sendMessage');
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('sock.sendMessage timed out after 20s')), 20000),
+      );
+      const sent = await Promise.race([
+        this.sock.sendMessage(jid, { text: prefixed }),
+        timeout,
+      ]);
       // Cache for retry requests (recipient may ask us to re-encrypt)
       if (sent?.key?.id && sent.message) {
         this.sentMessageCache.set(sent.key.id, sent.message);

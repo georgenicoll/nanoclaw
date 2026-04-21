@@ -13,6 +13,7 @@
     "format:fix": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "prepare": "husky",
+    "postinstall": "bash scripts/patch-baileys.sh",
     "setup": "tsx setup/index.ts",
     "auth": "tsx src/whatsapp-auth.ts",
     "lint": "eslint src/",
