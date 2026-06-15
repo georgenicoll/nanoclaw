@@ -7,10 +7,12 @@ import path from 'path';
  * `onExchangeComplete` hook (see types.ts) calls this with each completed
  * exchange; the runner never archives on a provider's behalf.
  *
- * One file per thread (keyed on the continuation id), appended to as exchanges
- * complete — mirroring the Claude path's one-file-per-session granularity,
- * since the Codex app-server keeps history server-side with no transcript to
- * roll up at a compaction boundary.
+ * One file per thread (keyed on the continuation id), named
+ * `<date>-<provider>-<thread>.md` and appended to as exchanges complete —
+ * mirroring the Claude path's one-file-per-session granularity and its
+ * date-prefixed, name-sortable filenames, since the Codex app-server keeps
+ * history server-side with no transcript to roll up at a compaction boundary.
+ * The date is the thread's creation day and stays stable across later appends.
  */
 
 const DEFAULT_CONVERSATIONS_DIR = '/workspace/agent/conversations';
@@ -40,7 +42,7 @@ export function archiveProviderExchange(options: ProviderExchangeArchiveOptions)
     options.conversationsDir || process.env.NANOCLAW_CONVERSATIONS_DIR || DEFAULT_CONVERSATIONS_DIR;
   fs.mkdirSync(conversationsDir, { recursive: true });
 
-  const filename = threadArchiveFilename(options.provider, options.continuation);
+  const filename = threadArchiveFilename(conversationsDir, options.provider, options.continuation, timestamp);
   const filePath = path.join(conversationsDir, filename);
 
   // Thread-level metadata (provider, thread id) belongs in the header, written
@@ -71,9 +73,24 @@ export function archiveProviderExchange(options: ProviderExchangeArchiveOptions)
   return filename;
 }
 
-function threadArchiveFilename(provider: string, continuation: string | undefined): string {
+function threadArchiveFilename(
+  dir: string,
+  provider: string,
+  continuation: string | undefined,
+  timestamp: Date,
+): string {
   const thread = sanitizeSlug(continuation || 'no-thread').slice(0, 48) || 'no-thread';
-  return `${sanitizeSlug(provider)}-${thread}.md`;
+  const suffix = `${sanitizeSlug(provider)}-${thread}.md`;
+  // Stable across appends: reuse this thread's existing file (whatever date it
+  // was first created on) so later exchanges keep landing in one file; only
+  // stamp the creation date when none exists yet. Keeps conversations/ sortable
+  // by name (thread start date) while staying one-file-per-thread. slice(11)
+  // strips the `YYYY-MM-DD-` prefix for an exact suffix match (no substring
+  // false-positives between threads with shared prefixes).
+  const dated = /^\d{4}-\d{2}-\d{2}-/;
+  const existing = fs.readdirSync(dir).find((f) => dated.test(f) && f.slice(11) === suffix);
+  if (existing) return existing;
+  return `${timestamp.toISOString().split('T')[0]}-${suffix}`;
 }
 
 function sanitizeSlug(value: string): string {
