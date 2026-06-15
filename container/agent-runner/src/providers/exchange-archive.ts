@@ -81,11 +81,8 @@ function threadArchiveFilename(
 ): string {
   const thread = sanitizeSlug(continuation || 'no-thread').slice(0, 48) || 'no-thread';
   const suffix = `${sanitizeSlug(provider)}-${thread}.md`;
-  // Stable across appends: reuse this thread's existing file (whatever date it
-  // was first created on); only stamp the creation date when none exists yet.
-  // Strip the date prefix with the same `dated` regex (not a fixed offset) for
-  // an exact suffix match — no substring false-positives, no magic length to
-  // drift if the date format changes.
+  // Reuse this thread's existing file whatever day it was created; only stamp a
+  // new date when none exists. Match on the suffix after the date prefix.
   const dated = /^\d{4}-\d{2}-\d{2}-/;
   const existing = fs.readdirSync(dir).find((f) => dated.test(f) && f.replace(dated, '') === suffix);
   if (existing) return existing;
