@@ -12,7 +12,7 @@ import {
   CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
-  HA_MCP_URL,
+  HA_URL,
   HA_TOKEN,
   IDLE_TIMEOUT,
   ONECLI_API_KEY,
@@ -147,14 +147,6 @@ function buildVolumeMounts(
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  const mcpServers: Record<string, unknown> = {};
-  if (HA_MCP_URL && HA_TOKEN) {
-    mcpServers['homeassistant'] = {
-      type: 'sse',
-      url: HA_MCP_URL,
-      headers: { Authorization: `Bearer ${HA_TOKEN}` },
-    };
-  }
   fs.writeFileSync(
     settingsFile,
     JSON.stringify(
@@ -167,10 +159,9 @@ function buildVolumeMounts(
           // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
           CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
           // Enable Claude's memory feature (persists user preferences between sessions)
-          // https://code.claude.com/docs/en/memory#manage-auto-memory
+          // https://code.claude.com/docs/en/memory#manage-as-memory
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
         },
-        ...(Object.keys(mcpServers).length > 0 && { mcpServers }),
       },
       null,
       2,
@@ -275,6 +266,16 @@ async function buildContainerArgs(
       { containerName },
       'OneCLI gateway not reachable — container will have no credentials',
     );
+  }
+
+  // Inject Home Assistant credentials so the container skill can use the REST API
+  if (HA_URL && HA_TOKEN) {
+    args.push('-e', `HA_URL=${HA_URL}`);
+    args.push('-e', `HA_TOKEN=${HA_TOKEN}`);
+    // Bypass the OneCLI proxy for local HA traffic
+    const haHost = new URL(HA_URL).hostname;
+    args.push('-e', `NO_PROXY=${haHost}`);
+    args.push('-e', `no_proxy=${haHost}`);
   }
 
   // Runtime-specific args for host gateway resolution
