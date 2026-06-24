@@ -26,9 +26,10 @@ vi.mock('../logger.js', () => ({
 
 // Mock group-folder (used by downloadFile)
 vi.mock('../group-folder.js', () => ({
-  resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/test-groups/${folder}`),
+  resolveGroupFolderPath: vi.fn(
+    (folder: string) => `/tmp/test-groups/${folder}`,
+  ),
 }));
-
 
 // --- Grammy mock ---
 
@@ -173,6 +174,10 @@ function currentBot() {
   return botRef.current;
 }
 
+// Allowlist covering every sender id used by the test ctx helpers
+// (default fromId 99001, plus the 42 override).
+const TEST_ALLOWED = new Set(['99001', '42']);
+
 async function triggerTextMessage(ctx: ReturnType<typeof createTextCtx>) {
   const handlers = currentBot().filterHandlers.get('message:text') || [];
   for (const h of handlers) await h(ctx);
@@ -200,10 +205,13 @@ describe('TelegramChannel', () => {
     vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
 
     // Mock global fetch for file downloads
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
+      }),
+    );
   });
 
   afterEach(() => {
@@ -216,7 +224,7 @@ describe('TelegramChannel', () => {
   describe('connection lifecycle', () => {
     it('resolves connect() when bot starts', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
 
       await channel.connect();
 
@@ -225,7 +233,7 @@ describe('TelegramChannel', () => {
 
     it('registers command and message handlers on connect', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
 
       await channel.connect();
 
@@ -244,7 +252,7 @@ describe('TelegramChannel', () => {
 
     it('registers error handler on connect', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
 
       await channel.connect();
 
@@ -253,7 +261,7 @@ describe('TelegramChannel', () => {
 
     it('disconnects cleanly', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
 
       await channel.connect();
       expect(channel.isConnected()).toBe(true);
@@ -264,7 +272,7 @@ describe('TelegramChannel', () => {
 
     it('isConnected() returns false before connect', () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
 
       expect(channel.isConnected()).toBe(false);
     });
@@ -275,7 +283,7 @@ describe('TelegramChannel', () => {
   describe('text message handling', () => {
     it('delivers message for registered group', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({ text: 'Hello everyone' });
@@ -303,7 +311,7 @@ describe('TelegramChannel', () => {
 
     it('only emits metadata for unregistered chats', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({ chatId: 999999, text: 'Unknown chat' });
@@ -321,7 +329,7 @@ describe('TelegramChannel', () => {
 
     it('skips bot commands (/chatid, /ping) but passes other / messages through', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       // Bot commands should be skipped
@@ -346,7 +354,7 @@ describe('TelegramChannel', () => {
 
     it('extracts sender name from first_name', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({ text: 'Hi', firstName: 'Bob' });
@@ -360,7 +368,7 @@ describe('TelegramChannel', () => {
 
     it('falls back to username when first_name missing', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({ text: 'Hi' });
@@ -375,7 +383,7 @@ describe('TelegramChannel', () => {
 
     it('falls back to user ID when name and username missing', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({ text: 'Hi', fromId: 42 });
@@ -400,7 +408,7 @@ describe('TelegramChannel', () => {
           },
         })),
       });
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -421,7 +429,7 @@ describe('TelegramChannel', () => {
 
     it('uses chat title as name for group chats', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -442,7 +450,7 @@ describe('TelegramChannel', () => {
 
     it('converts message.date to ISO timestamp', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const unixTime = 1704067200; // 2024-01-01T00:00:00.000Z
@@ -463,7 +471,7 @@ describe('TelegramChannel', () => {
   describe('@mention translation', () => {
     it('translates @bot_username mention to trigger format', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -482,7 +490,7 @@ describe('TelegramChannel', () => {
 
     it('does not translate if message already matches trigger', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -502,7 +510,7 @@ describe('TelegramChannel', () => {
 
     it('does not translate mentions of other bots', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -521,7 +529,7 @@ describe('TelegramChannel', () => {
 
     it('handles mention in middle of message', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -541,7 +549,7 @@ describe('TelegramChannel', () => {
 
     it('handles message with no entities', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({ text: 'plain message' });
@@ -557,7 +565,7 @@ describe('TelegramChannel', () => {
 
     it('ignores non-mention entities', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -580,7 +588,7 @@ describe('TelegramChannel', () => {
   describe('reply context', () => {
     it('extracts reply_to fields when replying to a text message', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -606,7 +614,7 @@ describe('TelegramChannel', () => {
 
     it('uses caption when reply has no text (media reply)', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -629,7 +637,7 @@ describe('TelegramChannel', () => {
 
     it('falls back to Unknown when reply sender has no from', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({
@@ -652,7 +660,7 @@ describe('TelegramChannel', () => {
 
     it('does not set reply fields when no reply_to_message', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createTextCtx({ text: 'Just a normal message' });
@@ -674,11 +682,16 @@ describe('TelegramChannel', () => {
   describe('non-text messages', () => {
     it('downloads photo and includes path in content', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createMediaCtx({
-        extra: { photo: [{ file_id: 'small_id', width: 90 }, { file_id: 'large_id', width: 800 }] },
+        extra: {
+          photo: [
+            { file_id: 'small_id', width: 90 },
+            { file_id: 'large_id', width: 800 },
+          ],
+        },
       });
       await triggerMediaMessage('message:photo', ctx);
       await flushPromises();
@@ -694,7 +707,7 @@ describe('TelegramChannel', () => {
 
     it('downloads photo with caption', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createMediaCtx({
@@ -707,14 +720,15 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Photo] (/workspace/group/attachments/photo_1.jpg) Look at this',
+          content:
+            '[Photo] (/workspace/group/attachments/photo_1.jpg) Look at this',
         }),
       );
     });
 
     it('falls back to placeholder when download fails', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       // Make getFile reject
@@ -735,10 +749,12 @@ describe('TelegramChannel', () => {
 
     it('downloads document and includes filename and path', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'documents/file_0.pdf' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'documents/file_0.pdf',
+      });
 
       const ctx = createMediaCtx({
         extra: { document: { file_name: 'report.pdf', file_id: 'doc_id' } },
@@ -750,17 +766,20 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Document: report.pdf] (/workspace/group/attachments/report.pdf)',
+          content:
+            '[Document: report.pdf] (/workspace/group/attachments/report.pdf)',
         }),
       );
     });
 
     it('downloads video', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'videos/file_0.mp4' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'videos/file_0.mp4',
+      });
 
       const ctx = createMediaCtx({
         extra: { video: { file_id: 'vid_id' } },
@@ -779,10 +798,12 @@ describe('TelegramChannel', () => {
 
     it('downloads voice message', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'voice/file_0.oga' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'voice/file_0.oga',
+      });
 
       const ctx = createMediaCtx({
         extra: { voice: { file_id: 'voice_id' } },
@@ -801,10 +822,12 @@ describe('TelegramChannel', () => {
 
     it('downloads audio with original filename', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'audio/file_0.mp3' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'audio/file_0.mp3',
+      });
 
       const ctx = createMediaCtx({
         extra: { audio: { file_id: 'audio_id', file_name: 'song.mp3' } },
@@ -822,7 +845,7 @@ describe('TelegramChannel', () => {
 
     it('stores sticker with emoji (no download)', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createMediaCtx({
@@ -839,7 +862,7 @@ describe('TelegramChannel', () => {
 
     it('stores location with placeholder (no download)', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createMediaCtx({});
@@ -853,7 +876,7 @@ describe('TelegramChannel', () => {
 
     it('stores contact with placeholder (no download)', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createMediaCtx({});
@@ -867,7 +890,7 @@ describe('TelegramChannel', () => {
 
     it('ignores non-text messages from unregistered chats', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const ctx = createMediaCtx({ chatId: 999999 });
@@ -879,12 +902,16 @@ describe('TelegramChannel', () => {
 
     it('stores document with fallback name when filename missing', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'documents/file_0.bin' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'documents/file_0.bin',
+      });
 
-      const ctx = createMediaCtx({ extra: { document: { file_id: 'doc_id' } } });
+      const ctx = createMediaCtx({
+        extra: { document: { file_id: 'doc_id' } },
+      });
       await triggerMediaMessage('message:document', ctx);
       await flushPromises();
 
@@ -902,7 +929,7 @@ describe('TelegramChannel', () => {
   describe('sendMessage', () => {
     it('sends message via bot API', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       await channel.sendMessage('tg:100200300', 'Hello');
@@ -916,7 +943,7 @@ describe('TelegramChannel', () => {
 
     it('strips tg: prefix from JID', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       await channel.sendMessage('tg:-1001234567890', 'Group message');
@@ -930,7 +957,7 @@ describe('TelegramChannel', () => {
 
     it('splits messages exceeding 4096 characters', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const longText = 'x'.repeat(5000);
@@ -953,7 +980,7 @@ describe('TelegramChannel', () => {
 
     it('sends exactly one message at 4096 characters', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const exactText = 'y'.repeat(4096);
@@ -964,7 +991,7 @@ describe('TelegramChannel', () => {
 
     it('handles send failure gracefully', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       currentBot().api.sendMessage.mockRejectedValueOnce(
@@ -979,7 +1006,7 @@ describe('TelegramChannel', () => {
 
     it('does nothing when bot is not initialized', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
 
       // Don't connect — bot is null
       await channel.sendMessage('tg:100200300', 'No bot');
@@ -992,27 +1019,47 @@ describe('TelegramChannel', () => {
 
   describe('ownsJid', () => {
     it('owns tg: JIDs', () => {
-      const channel = new TelegramChannel('test-token', createTestOpts());
+      const channel = new TelegramChannel(
+        'test-token',
+        createTestOpts(),
+        TEST_ALLOWED,
+      );
       expect(channel.ownsJid('tg:123456')).toBe(true);
     });
 
     it('owns tg: JIDs with negative IDs (groups)', () => {
-      const channel = new TelegramChannel('test-token', createTestOpts());
+      const channel = new TelegramChannel(
+        'test-token',
+        createTestOpts(),
+        TEST_ALLOWED,
+      );
       expect(channel.ownsJid('tg:-1001234567890')).toBe(true);
     });
 
     it('does not own WhatsApp group JIDs', () => {
-      const channel = new TelegramChannel('test-token', createTestOpts());
+      const channel = new TelegramChannel(
+        'test-token',
+        createTestOpts(),
+        TEST_ALLOWED,
+      );
       expect(channel.ownsJid('12345@g.us')).toBe(false);
     });
 
     it('does not own WhatsApp DM JIDs', () => {
-      const channel = new TelegramChannel('test-token', createTestOpts());
+      const channel = new TelegramChannel(
+        'test-token',
+        createTestOpts(),
+        TEST_ALLOWED,
+      );
       expect(channel.ownsJid('12345@s.whatsapp.net')).toBe(false);
     });
 
     it('does not own unknown JID formats', () => {
-      const channel = new TelegramChannel('test-token', createTestOpts());
+      const channel = new TelegramChannel(
+        'test-token',
+        createTestOpts(),
+        TEST_ALLOWED,
+      );
       expect(channel.ownsJid('random-string')).toBe(false);
     });
   });
@@ -1022,7 +1069,7 @@ describe('TelegramChannel', () => {
   describe('setTyping', () => {
     it('sends typing action when isTyping is true', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       await channel.setTyping('tg:100200300', true);
@@ -1035,7 +1082,7 @@ describe('TelegramChannel', () => {
 
     it('does nothing when isTyping is false', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       await channel.setTyping('tg:100200300', false);
@@ -1045,7 +1092,7 @@ describe('TelegramChannel', () => {
 
     it('does nothing when bot is not initialized', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
 
       // Don't connect
       await channel.setTyping('tg:100200300', true);
@@ -1055,7 +1102,7 @@ describe('TelegramChannel', () => {
 
     it('handles typing indicator failure gracefully', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       currentBot().api.sendChatAction.mockRejectedValueOnce(
@@ -1073,13 +1120,13 @@ describe('TelegramChannel', () => {
   describe('bot commands', () => {
     it('/chatid replies with chat ID and metadata', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const handler = currentBot().commandHandlers.get('chatid')!;
       const ctx = {
         chat: { id: 100200300, type: 'group' as const },
-        from: { first_name: 'Alice' },
+        from: { id: 99001, first_name: 'Alice' },
         reply: vi.fn(),
       };
 
@@ -1093,13 +1140,13 @@ describe('TelegramChannel', () => {
 
     it('/chatid shows chat type', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const handler = currentBot().commandHandlers.get('chatid')!;
       const ctx = {
         chat: { id: 555, type: 'private' as const },
-        from: { first_name: 'Bob' },
+        from: { id: 99001, first_name: 'Bob' },
         reply: vi.fn(),
       };
 
@@ -1113,11 +1160,11 @@ describe('TelegramChannel', () => {
 
     it('/ping replies with bot status', async () => {
       const opts = createTestOpts();
-      const channel = new TelegramChannel('test-token', opts);
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
       await channel.connect();
 
       const handler = currentBot().commandHandlers.get('ping')!;
-      const ctx = { reply: vi.fn() };
+      const ctx = { from: { id: 99001 }, reply: vi.fn() };
 
       await handler(ctx);
 
@@ -1125,11 +1172,88 @@ describe('TelegramChannel', () => {
     });
   });
 
+  // --- Allowlist gate ---
+
+  describe('user allowlist', () => {
+    it('ignores text messages from non-allowlisted users (no delivery, no metadata)', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
+      await channel.connect();
+
+      const ctx = createTextCtx({ text: '@Andy hello', fromId: 7777 });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onChatMetadata).not.toHaveBeenCalled();
+    });
+
+    it('delivers text messages from allowlisted users', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
+      await channel.connect();
+
+      const ctx = createTextCtx({ text: '@Andy hello', fromId: 99001 });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalled();
+    });
+
+    it('ignores media from non-allowlisted users', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        fromId: 7777,
+        extra: { photo: [{ file_id: 'abc' }] },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+      await flushPromises();
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not reply to /chatid or /ping from non-allowlisted users', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts, TEST_ALLOWED);
+      await channel.connect();
+
+      const chatidHandler = currentBot().commandHandlers.get('chatid')!;
+      const chatidCtx = {
+        chat: { id: 100200300, type: 'group' as const },
+        from: { id: 7777, first_name: 'Mallory' },
+        reply: vi.fn(),
+      };
+      await chatidHandler(chatidCtx);
+      expect(chatidCtx.reply).not.toHaveBeenCalled();
+
+      const pingHandler = currentBot().commandHandlers.get('ping')!;
+      const pingCtx = { from: { id: 7777 }, reply: vi.fn() };
+      await pingHandler(pingCtx);
+      expect(pingCtx.reply).not.toHaveBeenCalled();
+    });
+
+    it('rejects everyone when the allowlist is empty (fail-closed)', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts, new Set());
+      await channel.connect();
+
+      const ctx = createTextCtx({ text: '@Andy hello', fromId: 99001 });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+  });
+
   // --- Channel properties ---
 
   describe('channel properties', () => {
     it('has name "telegram"', () => {
-      const channel = new TelegramChannel('test-token', createTestOpts());
+      const channel = new TelegramChannel(
+        'test-token',
+        createTestOpts(),
+        TEST_ALLOWED,
+      );
       expect(channel.name).toBe('telegram');
     });
   });

@@ -562,4 +562,17 @@ export class WhatsAppChannel implements Channel {
   }
 }
 
-registerChannel('whatsapp', (opts: ChannelOpts) => new WhatsAppChannel(opts));
+registerChannel('whatsapp', (opts: ChannelOpts) => {
+  // Only activate WhatsApp when credentials are present. Without this, a missing
+  // or logged-out session makes Baileys emit a QR/auth event that the connection
+  // handler treats as fatal (process.exit), crash-looping the whole process and
+  // taking down every other channel. Run /add-whatsapp (or /setup) to authenticate.
+  const credsPath = path.join(STORE_DIR, 'auth', 'creds.json');
+  if (!fs.existsSync(credsPath)) {
+    logger.warn(
+      'WhatsApp: no credentials found — channel disabled. Run /add-whatsapp to authenticate.',
+    );
+    return null;
+  }
+  return new WhatsAppChannel(opts);
+});

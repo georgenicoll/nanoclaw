@@ -51,10 +51,28 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private allowedUserIds: Set<string>;
 
-  constructor(botToken: string, opts: TelegramChannelOpts) {
+  constructor(
+    botToken: string,
+    opts: TelegramChannelOpts,
+    allowedUserIds: Set<string>,
+  ) {
     this.botToken = botToken;
     this.opts = opts;
+    this.allowedUserIds = allowedUserIds;
+  }
+
+  /**
+   * Allowlist gate. Only Telegram users whose numeric id is configured in
+   * TELEGRAM_ALLOWED_USER_IDS may interact with the bot. Fail-closed: an empty
+   * allowlist rejects everyone. Rejected senders are silently dropped — no reply
+   * and no logging, so a stranger spamming the bot cannot fill the disk or
+   * provoke any response.
+   */
+  private isAllowed(ctx: any): boolean {
+    const userId = ctx.from?.id?.toString();
+    return !!userId && this.allowedUserIds.has(userId);
   }
 
   /**
@@ -90,7 +108,10 @@ export class TelegramChannel implements Channel {
       const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
       const resp = await fetch(fileUrl);
       if (!resp.ok) {
-        logger.warn({ fileId, status: resp.status }, 'Telegram file download failed');
+        logger.warn(
+          { fileId, status: resp.status },
+          'Telegram file download failed',
+        );
         return null;
       }
 
@@ -114,6 +135,7 @@ export class TelegramChannel implements Channel {
 
     // Command to get chat ID (useful for registration)
     this.bot.command('chatid', (ctx) => {
+      if (!this.isAllowed(ctx)) return;
       const chatId = ctx.chat.id;
       const chatType = ctx.chat.type;
       const chatName =
@@ -129,6 +151,7 @@ export class TelegramChannel implements Channel {
 
     // Command to check bot status
     this.bot.command('ping', (ctx) => {
+      if (!this.isAllowed(ctx)) return;
       ctx.reply(`${ASSISTANT_NAME} is online.`);
     });
 
@@ -137,6 +160,7 @@ export class TelegramChannel implements Channel {
     const TELEGRAM_BOT_COMMANDS = new Set(['chatid', 'ping']);
 
     this.bot.on('message:text', async (ctx) => {
+      if (!this.isAllowed(ctx)) return;
       if (ctx.message.text.startsWith('/')) {
         const cmd = ctx.message.text.slice(1).split(/[\s@]/)[0].toLowerCase();
         if (TELEGRAM_BOT_COMMANDS.has(cmd)) return;
@@ -238,6 +262,7 @@ export class TelegramChannel implements Channel {
       placeholder: string,
       opts?: { fileId?: string; filename?: string },
     ) => {
+      if (!this.isAllowed(ctx)) return;
       const chatJid = `tg:${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
@@ -426,12 +451,30 @@ export class TelegramChannel implements Channel {
 }
 
 registerChannel('telegram', (opts: ChannelOpts) => {
-  const envVars = readEnvFile(['TELEGRAM_BOT_TOKEN']);
+  const envVars = readEnvFile([
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_ALLOWED_USER_IDS',
+  ]);
   const token =
     process.env.TELEGRAM_BOT_TOKEN || envVars.TELEGRAM_BOT_TOKEN || '';
   if (!token) {
     logger.warn('Telegram: TELEGRAM_BOT_TOKEN not set');
     return null;
   }
-  return new TelegramChannel(token, opts);
+  const allowedRaw =
+    process.env.TELEGRAM_ALLOWED_USER_IDS ||
+    envVars.TELEGRAM_ALLOWED_USER_IDS ||
+    '';
+  const allowedUserIds = new Set(
+    allowedRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  if (allowedUserIds.size === 0) {
+    logger.warn(
+      'Telegram: TELEGRAM_ALLOWED_USER_IDS is empty — bot will ignore all messages (fail-closed)',
+    );
+  }
+  return new TelegramChannel(token, opts, allowedUserIds);
 });
