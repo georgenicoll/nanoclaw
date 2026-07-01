@@ -56,9 +56,10 @@ describe('composeGroupAgentsMd cap handling', () => {
       composeGroupAgentsMd(g, groupDir);
       const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
       expect(doc).not.toContain('Omitted for size');
-      // Agent-authored skills must be told their persistent home — without
-      // this, authored skills land on ephemeral container paths and vanish.
-      expect(doc).toContain('/workspace/agent/skills');
+      // Agent-authored skills must be told a home that is BOTH persistent and
+      // codex-discovered (~/.codex/skills). /workspace/agent/skills is not
+      // scanned by codex, so authored skills there never trigger.
+      expect(doc).toContain('~/.codex/skills');
       expect(Buffer.byteLength(doc, 'utf-8')).toBeLessThanOrEqual(CODEX_PROJECT_DOC_MAX_BYTES);
     } finally {
       fs.rmSync(groupDir, { recursive: true, force: true });
