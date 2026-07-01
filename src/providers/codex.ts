@@ -31,6 +31,7 @@ import path from 'path';
 
 import { DATA_DIR } from '../config.js';
 import { getAgentGroup } from '../db/agent-groups.js';
+import { materializeTemplateSkills } from '../group-skills.js';
 import { composeGroupAgentsMd } from './codex-agents-md.js';
 import { registerProviderContainerConfig } from './provider-container-registry.js';
 
@@ -52,6 +53,11 @@ registerProviderContainerConfig(
     const group = getAgentGroup(ctx.agentGroupId);
     if (group) composeGroupAgentsMd(group, ctx.groupDir);
     syncCodexSkillLinks(ctx.groupDir, ctx.selectedSkills);
+    // Template skills live on the Claude plane (.claude-shared/skills); codex
+    // reads .agents/skills (RO-mounted), so mirror them here, host-side, via the
+    // shared provider-agnostic helper. Real dirs survive the symlink-only prune
+    // above and coexist with the shared-skill symlinks it creates.
+    materializeTemplateSkills(ctx.agentGroupId, path.join(ctx.groupDir, '.agents', 'skills'));
 
     // No credential env here — OneCLI's container-config drives auth end to
     // end: the gateway serves a sentinel auth.json stub into ~/.codex for

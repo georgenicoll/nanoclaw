@@ -19,6 +19,7 @@ import path from 'path';
 
 import type { McpServerConfig } from '../container-config.js';
 import { getContainerConfig } from '../db/container-configs.js';
+import { readGroupPersona } from '../group-persona.js';
 import { log } from '../log.js';
 import type { AgentGroup } from '../types.js';
 
@@ -79,6 +80,11 @@ export function composeGroupAgentsMd(group: AgentGroup, groupDir: string): void 
       .join('\n\n');
     if (body) sections.push({ name, content: `# ${name}\n\n${body}` });
   };
+
+  // Template persona first — the top of the system prompt. 'Persona' is not a
+  // droppable prefix (see fitAgentsMdToCap.isDroppable), so it is never evicted.
+  const persona = readGroupPersona(groupDir);
+  if (persona) pushSection('Persona', persona);
 
   const sharedBase = path.join(process.cwd(), 'container', 'AGENTS.md');
   if (fs.existsSync(sharedBase)) {
