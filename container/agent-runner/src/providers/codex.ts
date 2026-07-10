@@ -74,9 +74,7 @@ function normalizeEffort(effort: string | undefined): CodexReasoningEffort | und
 
 export class CodexProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
-  // Codex has no native NanoClaw memory — opt in to the runner's persistent
-  // memory/ scaffold (see memory-scaffold.ts).
-  readonly usesMemoryScaffold = true;
+  readonly providesMemorySessionHook = true;
   // The app-server keeps history server-side; there is no on-disk transcript,
   // so the provider persists each exchange itself into `conversations/`
   // (see exchange-archive.ts). The poll-loop reports exchanges through this

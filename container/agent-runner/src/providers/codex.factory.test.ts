@@ -14,4 +14,8 @@ describe('CodexProvider', () => {
   it('accepts supported reasoning effort values', () => {
     expect(new CodexProvider({ effort: 'xhigh' })).toBeInstanceOf(CodexProvider);
   });
+
+  it('declares native memory SessionStart delivery', () => {
+    expect(new CodexProvider({}).providesMemorySessionHook).toBe(true);
+  });
 });
