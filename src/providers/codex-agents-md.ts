@@ -33,7 +33,7 @@ const MEMORY_POINTER = [
   'The live memory index and definition are supplied by NanoClaw at session startup, clear, and after compaction.',
   'Editable memory-system definition: `/workspace/agent/memory/system/definition.md`.',
   'Top memory index: `/workspace/agent/memory/index.md`.',
-  'Read the definition and index, then use memories, data, and conversation archives when relevant.',
+  'Read the definition and index, then use linked memory files and conversation archives when relevant.',
   'Stored user preferences are binding: read any linked memory file relevant to the user or the request, and apply it without being asked.',
   'Do not use `AGENTS.local.md` or `AGENTS.override.md` for memory.',
 ].join('\n\n');

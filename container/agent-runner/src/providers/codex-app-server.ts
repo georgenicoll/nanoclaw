@@ -14,9 +14,13 @@ function log(msg: string): void {
 
 const INIT_TIMEOUT_MS = 30_000;
 
-export const CODEX_MEMORY_SESSION_START_MATCHER = 'startup|clear|compact';
-const CODEX_MEMORY_HOOK_COMMAND = 'bun /app/src/memory-hook.ts';
 export const CODEX_APP_SERVER_ARGS = ['--dangerously-bypass-hook-trust', 'app-server', '--listen', 'stdio://'] as const;
+
+export interface CodexMemorySessionHook {
+  readonly command: string;
+  readonly legacyCommands: readonly string[];
+  readonly sources: readonly string[];
+}
 
 export const STALE_THREAD_RE = /thread\s+not\s+found|unknown\s+thread|thread[_\s]id|no such thread/i;
 
@@ -378,6 +382,7 @@ export function attachCodexAutoApproval(server: AppServer): void {
 
 export function writeCodexConfigToml(
   servers: Record<string, CodexMcpServer>,
+  memorySessionHook: CodexMemorySessionHook,
   opts: { model?: string; effort?: string } = {},
 ): void {
   const codexConfigDir = path.join(process.env.HOME || '/home/node', '.codex');
@@ -425,10 +430,13 @@ export function writeCodexConfigToml(
   const hooks = objectProperty(hooksConfig, 'hooks');
   const sessionStart = arrayProperty(hooks, 'SessionStart');
 
-  const nextSessionStart = sessionStart.map(removeNanoClawMemoryHook).filter((entry) => entry !== undefined);
+  const memoryCommands = new Set([memorySessionHook.command, ...memorySessionHook.legacyCommands]);
+  const nextSessionStart = sessionStart
+    .map((entry) => removeNanoClawMemoryHooks(entry, memoryCommands))
+    .filter((entry) => entry !== undefined);
   nextSessionStart.push({
-    matcher: CODEX_MEMORY_SESSION_START_MATCHER,
-    hooks: [{ type: 'command', command: CODEX_MEMORY_HOOK_COMMAND, timeout: 10 }],
+    matcher: memorySessionHook.sources.join('|'),
+    hooks: [{ type: 'command', command: memorySessionHook.command, timeout: 10 }],
   });
   hooks.SessionStart = nextSessionStart;
   fs.writeFileSync(hooksJsonPath, JSON.stringify(hooksConfig, null, 2) + '\n');
@@ -465,11 +473,11 @@ function arrayProperty(parent: Record<string, unknown>, key: string): unknown[] 
   return value;
 }
 
-function removeNanoClawMemoryHook(value: unknown): unknown {
+function removeNanoClawMemoryHooks(value: unknown, commands: ReadonlySet<string>): unknown {
   if (!isRecord(value) || !Array.isArray(value.hooks)) return value;
   const remaining = value.hooks.filter((hook) => {
     if (!isRecord(hook)) return true;
-    return hook.command !== CODEX_MEMORY_HOOK_COMMAND;
+    return typeof hook.command !== 'string' || !commands.has(hook.command);
   });
   return remaining.length > 0 ? { ...value, hooks: remaining } : undefined;
 }

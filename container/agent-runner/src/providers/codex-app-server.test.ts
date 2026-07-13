@@ -6,13 +6,18 @@ import path from 'path';
 import {
   type AppServer,
   CODEX_APP_SERVER_ARGS,
-  CODEX_MEMORY_SESSION_START_MATCHER,
   attachCodexAutoApproval,
   buildCodexProcessEnv,
   startOrResumeCodexThread,
   tomlBasicString,
   writeCodexConfigToml,
 } from './codex-app-server.js';
+
+const MEMORY_SESSION_HOOK = {
+  command: 'bun /app/src/memory/hook.ts',
+  legacyCommands: ['bun /app/src/memory-hook.ts'],
+  sources: ['startup', 'clear', 'compact'],
+} as const;
 
 let tmpHome: string | null = null;
 const originalHome = process.env.HOME;
@@ -46,6 +51,7 @@ describe('Codex config TOML', () => {
           env: { FOO: 'bar' },
         },
       },
+      MEMORY_SESSION_HOOK,
       { model: 'gpt-5', effort: 'medium' },
     );
 
@@ -69,10 +75,9 @@ describe('Codex config TOML', () => {
     expect(hooks.hooks.SessionStart).toEqual([
       {
         matcher: 'startup|clear|compact',
-        hooks: [{ type: 'command', command: 'bun /app/src/memory-hook.ts', timeout: 10 }],
+        hooks: [{ type: 'command', command: 'bun /app/src/memory/hook.ts', timeout: 10 }],
       },
     ]);
-    expect(CODEX_MEMORY_SESSION_START_MATCHER).toBe('startup|clear|compact');
     expect(CODEX_APP_SERVER_ARGS).toContain('--dangerously-bypass-hook-trust');
   });
 
@@ -101,8 +106,8 @@ describe('Codex config TOML', () => {
       }),
     );
 
-    writeCodexConfigToml({});
-    writeCodexConfigToml({});
+    writeCodexConfigToml({}, MEMORY_SESSION_HOOK);
+    writeCodexConfigToml({}, MEMORY_SESSION_HOOK);
 
     const config = JSON.parse(fs.readFileSync(hooksPath, 'utf-8'));
     expect(config.version).toBe(1);
@@ -113,12 +118,12 @@ describe('Codex config TOML', () => {
     });
     expect(
       config.hooks.SessionStart.filter((entry: { hooks?: Array<{ command?: string }> }) =>
-        entry.hooks?.some((hook) => hook.command === 'bun /app/src/memory-hook.ts'),
+        entry.hooks?.some((hook) => hook.command === 'bun /app/src/memory/hook.ts'),
       ),
     ).toEqual([
       {
         matcher: 'startup|clear|compact',
-        hooks: [{ type: 'command', command: 'bun /app/src/memory-hook.ts', timeout: 10 }],
+        hooks: [{ type: 'command', command: 'bun /app/src/memory/hook.ts', timeout: 10 }],
       },
     ]);
   });

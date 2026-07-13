@@ -60,6 +60,8 @@ describe('composeGroupAgentsMd cap handling', () => {
       // codex-discovered (~/.codex/skills). /workspace/agent/skills is not
       // scanned by codex, so authored skills there never trigger.
       expect(doc).toContain('~/.codex/skills');
+      expect(doc).toContain('linked memory files');
+      expect(doc).not.toContain('memories, data');
       expect(Buffer.byteLength(doc, 'utf-8')).toBeLessThanOrEqual(CODEX_PROJECT_DOC_MAX_BYTES);
     } finally {
       fs.rmSync(groupDir, { recursive: true, force: true });

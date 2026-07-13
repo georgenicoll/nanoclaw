@@ -15,7 +15,7 @@ describe('CodexProvider', () => {
     expect(new CodexProvider({ effort: 'xhigh' })).toBeInstanceOf(CodexProvider);
   });
 
-  it('declares native memory SessionStart delivery', () => {
-    expect(new CodexProvider({}).providesMemorySessionHook).toBe(true);
+  it('requires the shared memory hook before starting a query', () => {
+    expect(() => new CodexProvider({}).query({ prompt: 'hello', cwd: '/workspace/agent' })).toThrow(/not registered/);
   });
 });
