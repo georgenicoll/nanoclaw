@@ -105,7 +105,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // long-lived hub keeps trying to reload an ever-growing .jsonl, hangs the
   // first turn, and gets killed before it can reply (then repeats forever).
   if (continuation) {
-    const rotateReason = config.provider.maybeRotateContinuation?.(continuation, config.cwd);
+    const rotateReason = await config.provider.maybeRotateContinuation?.(continuation, config.cwd);
     if (rotateReason) {
       log(`Rotating session — ${rotateReason}; starting fresh`);
       clearContinuation(config.providerName);

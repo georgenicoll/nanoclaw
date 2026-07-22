@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 
 import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk';
 
@@ -6,6 +8,7 @@ import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 import { mcpServersToOpenCodeConfig } from './mcp-to-opencode.js';
 import { memoryContextForSessionStart, type MemorySessionHookRegistration } from '../memory/session-hook.js';
+import { TIMEZONE, formatLocalStamp } from '../timezone.js';
 
 function log(msg: string): void {
   console.error(`[opencode-provider] ${msg}`);
@@ -210,12 +213,125 @@ function sessionErrorMessage(props: { error?: unknown }): string {
   return JSON.stringify(props.error) || 'OpenCode session error';
 }
 
+// ── Context-size bounding ──
+//
+// A chat-completions call is stateless per request, so OpenCode's own
+// server resends the full accumulated session on every turn to keep
+// context. Left unchecked, a long-lived session (resumed across polls and
+// container restarts via `continuation`) grows forever. Two guards, mirroring
+// Claude's transcript-size/age rotation in this file's sibling `claude.ts`:
+//
+//  1. Mid-session compaction: once the latest turn's context tokens cross
+//     OPENCODE_SESSION_COMPACT_TOKENS, ask OpenCode's own `/session/{id}/summarize`
+//     to compact its history in place (keeps the same session id).
+//  2. Cold-resume rotation (`maybeRotateContinuation`): a backstop at
+//     container start — if compaction never happened or the session is
+//     simply too old, archive a markdown summary and start fresh.
+
+interface OpenCodeTokenUsage {
+  input?: number;
+  cache?: { read?: number; write?: number };
+}
+
+/** Total tokens the last turn sent as context: fresh input + everything served from cache. */
+function totalContextTokens(tokens?: OpenCodeTokenUsage): number {
+  if (!tokens) return 0;
+  return (tokens.input ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0);
+}
+
+function opencodeCompactTokens(): number {
+  return Number(process.env.OPENCODE_SESSION_COMPACT_TOKENS) || 100_000;
+}
+
+function opencodeCompactCooldownMs(): number {
+  return Number(process.env.OPENCODE_SESSION_COMPACT_COOLDOWN_MS) || 10 * 60_000;
+}
+
+function opencodeRotateTokens(): number {
+  return Number(process.env.OPENCODE_SESSION_ROTATE_TOKENS) || 300_000;
+}
+
+function opencodeRotateAgeMs(): number {
+  const raw = process.env.OPENCODE_SESSION_ROTATE_AGE_DAYS;
+  if (raw === undefined || raw.trim() === '') return 14 * 86_400_000;
+  const days = Number(raw);
+  if (!Number.isFinite(days)) return 14 * 86_400_000;
+  // Explicit non-positive override disables the age check; the token cap alone governs.
+  if (days <= 0) return 0;
+  return days * 86_400_000;
+}
+
+/** Cheapest configured model wins — summarization doesn't need the main model. */
+function resolveSummarizeModel(): { providerID: string; modelID: string } | null {
+  const providerID = process.env.OPENCODE_PROVIDER || 'anthropic';
+  const raw = process.env.OPENCODE_SMALL_MODEL || process.env.OPENCODE_MODEL;
+  if (!raw) return null;
+  const modelID = raw.replace(new RegExp(`^${providerID}/`), '');
+  return { providerID, modelID };
+}
+
+async function withTemporaryOpenCodeServer<T>(fn: (client: OpencodeClient) => Promise<T>): Promise<T> {
+  const { url, proc } = await spawnOpencodeServer({});
+  try {
+    return await fn(createOpencodeClient({ baseUrl: url }));
+  } finally {
+    killProcessTree(proc);
+  }
+}
+
+interface OpenCodeArchivableMessage {
+  info: { role: string; summary?: boolean };
+  parts: Array<{ type: string; text?: string }>;
+}
+
+/**
+ * Render a rotated OpenCode session as markdown into the agent's
+ * `conversations/` folder, mirroring Claude's `archiveTranscriptFile` — best
+ * effort, so context survives rotation instead of vanishing outright.
+ */
+function archiveOpenCodeMessages(messages: OpenCodeArchivableMessage[], assistantName?: string): void {
+  try {
+    const parsed = messages
+      // Compaction runs produce their own synthetic assistant message — not part of the real exchange.
+      .filter((m) => !(m.info.role === 'assistant' && m.info.summary))
+      .map((m) => ({
+        role: m.info.role,
+        content: m.parts
+          .filter((p) => p.type === 'text' && typeof p.text === 'string')
+          .map((p) => p.text)
+          .join(''),
+      }))
+      .filter((m) => m.content);
+    if (parsed.length === 0) return;
+
+    const conversationsDir = process.env.NANOCLAW_CONVERSATIONS_DIR || '/workspace/agent/conversations';
+    fs.mkdirSync(conversationsDir, { recursive: true });
+    const filename = `${formatLocalStamp(new Date(), TIMEZONE).slice(0, 10)}-opencode-rotated-${Date.now()}.md`;
+    const lines = ['# Conversation (rotated)', '', `Archived: ${formatLocalStamp(new Date(), TIMEZONE)}`, '', '---', ''];
+    for (const m of parsed) {
+      const sender = m.role === 'user' ? 'User' : assistantName || 'Assistant';
+      const content = m.content.length > 2000 ? `${m.content.slice(0, 2000)}...` : m.content;
+      lines.push(`**${sender}**: ${content}`, '');
+    }
+    fs.writeFileSync(path.join(conversationsDir, filename), lines.join('\n'));
+    log(`Archived rotated OpenCode session to ${filename}`);
+  } catch (err) {
+    log(`Failed to archive OpenCode session: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export class OpenCodeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
 
   private readonly options: ProviderOptions;
   private activeSessionId: string | undefined;
   private memorySessionHook: MemorySessionHookRegistration | undefined;
+  // Cooldown gate for mid-session compaction — see the `session.summarize`
+  // call in query()'s gen(). Time-based rather than event-based (e.g.
+  // "wait for the summary message to land") so it self-heals even if a
+  // summarize call is dropped or its completion is never observed.
+  private compactionCooldownSessionId: string | undefined;
+  private compactionCooldownUntil = 0;
 
   constructor(options: ProviderOptions = {}) {
     this.options = options;
@@ -232,6 +348,47 @@ export class OpenCodeProvider implements AgentProvider {
   isSessionInvalid(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);
     return STALE_SESSION_RE.test(msg);
+  }
+
+  /**
+   * Cold-resume guard: on container start, check the stored session's size
+   * (context tokens on its last turn) and age via a throwaway OpenCode
+   * server, and drop it if either is past cap. Best effort — any failure
+   * here (including no `opencode` binary reachable) just skips the check and
+   * keeps resuming, same as Claude's transcript-read failure path.
+   */
+  async maybeRotateContinuation(continuation: string): Promise<string | null> {
+    try {
+      return await withTemporaryOpenCodeServer(async (client) => {
+        const sessionRes = await client.session.get({ path: { id: continuation } });
+        if (sessionRes.error || !sessionRes.data) return null;
+
+        const messagesRes = await client.session.messages({ path: { id: continuation } });
+        const messages = (messagesRes.data ?? []) as unknown as Array<
+          OpenCodeArchivableMessage & { info: { tokens?: OpenCodeTokenUsage } }
+        >;
+
+        const lastAssistant = messages.filter((m) => m.info.role === 'assistant' && !m.info.summary).pop();
+        const contextTokens = totalContextTokens(lastAssistant?.info.tokens);
+
+        const maxAgeMs = opencodeRotateAgeMs();
+        const ageMs = Date.now() - sessionRes.data.time.created;
+
+        let reason: string | null = null;
+        if (contextTokens > opencodeRotateTokens()) {
+          reason = `session context ~${contextTokens} tokens > ${opencodeRotateTokens()} cap`;
+        } else if (maxAgeMs > 0 && ageMs > maxAgeMs) {
+          reason = `session ${(ageMs / 86_400_000).toFixed(1)}d old > ${(maxAgeMs / 86_400_000).toFixed(0)}d cap`;
+        }
+        if (!reason) return null;
+
+        archiveOpenCodeMessages(messages, this.options.assistantName);
+        return reason;
+      });
+    } catch (err) {
+      log(`maybeRotateContinuation check failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
   }
 
   query(input: QueryInput): AgentQuery {
@@ -310,6 +467,10 @@ export class OpenCodeProvider implements AgentProvider {
 
         const partTextByMessageId = new Map<string, string>();
         const roleByMessageId = new Map<string, string>();
+        // A summarize() call's own synthetic assistant message shares this
+        // session id and the same event stream — never treat it as the reply.
+        const summaryMessageIds = new Set<string>();
+        let lastAssistantTokens: OpenCodeTokenUsage | undefined;
         let lastEventAt = Date.now();
         let eventTimedOut = false;
         const timeoutCheck = setInterval(() => {
@@ -341,9 +502,18 @@ export class OpenCodeProvider implements AgentProvider {
 
             switch (ev.type) {
               case 'message.updated': {
-                const info = ev.properties.info as { id?: string; role?: string } | undefined;
+                const info = ev.properties.info as
+                  | { id?: string; role?: string; summary?: boolean; tokens?: OpenCodeTokenUsage }
+                  | undefined;
                 if (info?.id && info?.role) {
                   roleByMessageId.set(info.id, info.role);
+                }
+                if (info?.role === 'assistant') {
+                  if (info.summary && info.id) {
+                    summaryMessageIds.add(info.id);
+                  } else if (info.tokens) {
+                    lastAssistantTokens = info.tokens;
+                  }
                 }
                 break;
               }
@@ -411,11 +581,34 @@ export class OpenCodeProvider implements AgentProvider {
 
         let resultText = '';
         for (const [msgId, role] of roleByMessageId) {
-          if (role === 'assistant') {
+          if (role === 'assistant' && !summaryMessageIds.has(msgId)) {
             resultText = partTextByMessageId.get(msgId) ?? resultText;
           }
         }
         yield { type: 'result', text: resultText || null };
+
+        // Mid-session compaction: once this turn's context tokens cross the
+        // cap, ask OpenCode to summarize its own history in place. Fire and
+        // forget — its completion (and any events it emits) is handled by
+        // whichever turn's event loop is reading the shared stream when it
+        // lands; summaryMessageIds above keeps that from being mistaken for
+        // a reply. The cooldown re-arms this on a timer, not on observing
+        // completion, so it self-heals even if that message never arrives.
+        const contextTokens = totalContextTokens(lastAssistantTokens);
+        const compactCap = opencodeCompactTokens();
+        const onCooldown =
+          self.compactionCooldownSessionId === sessionId && Date.now() < self.compactionCooldownUntil;
+        if (contextTokens > compactCap && !onCooldown) {
+          const target = resolveSummarizeModel();
+          if (target) {
+            self.compactionCooldownSessionId = sessionId;
+            self.compactionCooldownUntil = Date.now() + opencodeCompactCooldownMs();
+            log(`Requesting compaction for session ${sessionId} (~${contextTokens} context tokens > ${compactCap} cap)`);
+            client.session.summarize({ path: { id: sessionId }, body: target }).catch((err) => {
+              log(`Compaction request failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+        }
       }
     }
 

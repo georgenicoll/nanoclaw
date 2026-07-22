@@ -487,7 +487,7 @@ export class ClaudeProvider implements AgentProvider {
     return STALE_SESSION_RE.test(msg);
   }
 
-  maybeRotateContinuation(continuation: string): string | null {
+  async maybeRotateContinuation(continuation: string): Promise<string | null> {
     const transcriptPath = findTranscriptPath(continuation);
     if (!transcriptPath) return null;
 

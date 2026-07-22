@@ -43,8 +43,10 @@ export interface AgentProvider {
    * SDK reloads the whole .jsonl on every resume. Past a threshold the first
    * turn alone can exceed the host's idle ceiling, so the container is killed
    * before it ever replies. Providers without an on-disk transcript omit this.
+   * Async because some providers (e.g. OpenCode) must query a server for
+   * session size/age rather than reading a local file.
    */
-  maybeRotateContinuation?(continuation: string, cwd: string): string | null;
+  maybeRotateContinuation?(continuation: string, cwd: string): Promise<string | null>;
 }
 
 /** One prompt/result round-trip, as reported to `onExchangeComplete`. */

@@ -54,36 +54,36 @@ afterEach(() => {
 });
 
 describe('ClaudeProvider.maybeRotateContinuation', () => {
-  it('keeps a small, recent transcript (returns null, leaves file in place)', () => {
+  it('keeps a small, recent transcript (returns null, leaves file in place)', async () => {
     process.env.CLAUDE_TRANSCRIPT_ROTATE_BYTES = String(1024 * 1024);
     const p = writeTranscript('sess-small', 4096);
     const provider = new ClaudeProvider();
-    expect(provider.maybeRotateContinuation('sess-small', CWD)).toBeNull();
+    expect(await provider.maybeRotateContinuation('sess-small', CWD)).toBeNull();
     expect(fs.existsSync(p)).toBe(true);
   });
 
-  it('rotates an oversized transcript (returns reason, moves the .jsonl aside)', () => {
+  it('rotates an oversized transcript (returns reason, moves the .jsonl aside)', async () => {
     process.env.CLAUDE_TRANSCRIPT_ROTATE_BYTES = String(64 * 1024);
     const p = writeTranscript('sess-big', 200 * 1024);
     const provider = new ClaudeProvider();
-    const reason = provider.maybeRotateContinuation('sess-big', CWD);
+    const reason = await provider.maybeRotateContinuation('sess-big', CWD);
     expect(reason).toContain('MB');
     expect(fs.existsSync(p)).toBe(false); // original moved out of the resume path
     const dir = path.dirname(p);
     expect(fs.readdirSync(dir).some((f) => f.startsWith('sess-big.jsonl.rotated-'))).toBe(true);
   });
 
-  it('rotates an aged transcript even when small', () => {
+  it('rotates an aged transcript even when small', async () => {
     process.env.CLAUDE_TRANSCRIPT_ROTATE_BYTES = String(1024 * 1024);
     process.env.CLAUDE_TRANSCRIPT_ROTATE_AGE_DAYS = '7';
     const old = new Date(Date.now() - 10 * 86400_000).toISOString();
     writeTranscript('sess-old', 2048, old);
     const provider = new ClaudeProvider();
-    expect(provider.maybeRotateContinuation('sess-old', CWD)).toContain('d');
+    expect(await provider.maybeRotateContinuation('sess-old', CWD)).toContain('d');
   });
 
-  it('returns null for an unknown session id', () => {
+  it('returns null for an unknown session id', async () => {
     const provider = new ClaudeProvider();
-    expect(provider.maybeRotateContinuation('does-not-exist', CWD)).toBeNull();
+    expect(await provider.maybeRotateContinuation('does-not-exist', CWD)).toBeNull();
   });
 });
