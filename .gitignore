@@ -37,6 +37,9 @@ groups
 start-nanoclaw.sh
 nanoclaw.pid
 
+# Claude Code runtime state (not part of the app)
+.claude/scheduled_tasks.lock
+
 # OS
 .DS_Store
 
