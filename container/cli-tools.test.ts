@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -56,8 +56,14 @@ describe('cli-tools manifest', () => {
     // Regression guard for the opt-in boundary. `vercel` was baked in and is
     // now added by /add-vercel; anything reintroducing it here silently puts a
     // deployment CLI, and its credential surface, into every agent again.
+    // A `vercel` entry is legitimate on an install where /add-vercel actually
+    // ran — that leaves its container skill behind, and its own structural
+    // guard (the skill's copied vercel-manifest.test.ts) checks the pairing.
     const names = manifest.map((t) => t.name);
-    expect(names).not.toContain('vercel');
+    const vercelSkillInstalled = existsSync(join(here, 'skills', 'vercel-cli', 'SKILL.md'));
+    if (!vercelSkillInstalled) {
+      expect(names).not.toContain('vercel');
+    }
   });
 
   it('is wired into the Dockerfile build (COPY manifest + run installer)', () => {
